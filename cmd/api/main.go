@@ -70,7 +70,8 @@ func main() {
 		projector,
 	)
 
-	handler := httpapi.NewHandler(svc, queryService)
+	transferSvc := app.NewTransferService(svc)
+	handler := httpapi.NewHandler(svc, transferSvc, queryService)
 
 	staticFS, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {

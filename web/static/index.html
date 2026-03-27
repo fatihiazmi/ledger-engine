@@ -477,25 +477,28 @@
                 return alert('Fill all fields. From and To must be different.');
             }
 
-            const amount = Math.round(dollars * 100); // dollars to cents
             const fromAcc = accounts.find(a => a.account_id === fromId);
             const currency = fromAcc?.currency || 'USD';
 
-            const res = await fetch(`${API}/transactions`, {
+            const res = await fetch(`${API}/transfers`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    entries: [
-                        { account_id: fromId, amount, currency, type: 'DEBIT' },
-                        { account_id: toId, amount, currency, type: 'CREDIT' }
-                    ],
+                    from_account_id: fromId,
+                    to_account_id: toId,
+                    amount: dollars,
+                    currency: currency,
                     description: desc || 'Transfer'
                 })
             });
 
+            const data = await res.json();
             if (!res.ok) {
-                const err = await res.json();
-                return alert('Error: ' + err.error);
+                const state = data.state || 'UNKNOWN';
+                const msg = state === 'COMPENSATED'
+                    ? `Transfer failed and was automatically reversed.\n\nReason: ${data.error}`
+                    : `Error: ${data.error}`;
+                alert(msg);
             }
 
             closeModals();

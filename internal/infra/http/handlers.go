@@ -11,12 +11,13 @@ import (
 )
 
 type Handler struct {
-	svc     *app.LedgerService
-	queries *projection.PostgresQueryService
+	svc         *app.LedgerService
+	transferSvc *app.TransferService
+	queries     *projection.PostgresQueryService
 }
 
-func NewHandler(svc *app.LedgerService, queries *projection.PostgresQueryService) *Handler {
-	return &Handler{svc: svc, queries: queries}
+func NewHandler(svc *app.LedgerService, transferSvc *app.TransferService, queries *projection.PostgresQueryService) *Handler {
+	return &Handler{svc: svc, transferSvc: transferSvc, queries: queries}
 }
 
 // --- Request/Response DTOs ---
@@ -149,6 +150,68 @@ func (h *Handler) Deposit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deposited"})
+}
+
+func (h *Handler) Transfer(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FromAccountID string  `json:"from_account_id"`
+		ToAccountID   string  `json:"to_account_id"`
+		Amount        float64 `json:"amount"` // dollars
+		Currency      string  `json:"currency"`
+		Description   string  `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		return
+	}
+
+	fromID, err := ledger.NewAccountID(req.FromAccountID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid from_account_id"})
+		return
+	}
+	toID, err := ledger.NewAccountID(req.ToAccountID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid to_account_id"})
+		return
+	}
+
+	cents := int64(req.Amount * 100)
+	currency := ledger.Currency(req.Currency)
+	if currency == "" {
+		currency = ledger.USD
+	}
+
+	desc := req.Description
+	if desc == "" {
+		desc = "Transfer"
+	}
+
+	saga, err := h.transferSvc.Execute(r.Context(), app.TransferCmd{
+		FromAccountID: fromID,
+		ToAccountID:   toID,
+		Amount:        cents,
+		Currency:      currency,
+		Description:   desc,
+	})
+
+	if err != nil {
+		status := http.StatusUnprocessableEntity
+		result := map[string]any{
+			"error":       err.Error(),
+			"transfer_id": saga.ID(),
+			"state":       string(saga.State()),
+			"steps":       saga.Steps(),
+		}
+		writeJSON(w, status, result)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"transfer_id": saga.ID(),
+		"state":       string(saga.State()),
+		"steps":       saga.Steps(),
+	})
 }
 
 func (h *Handler) GetBalance(w http.ResponseWriter, r *http.Request) {

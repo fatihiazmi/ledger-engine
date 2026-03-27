@@ -102,23 +102,34 @@ func (s *LedgerService) Deposit(ctx context.Context, accountID ledger.AccountID,
 }
 
 func (s *LedgerService) getOrCreateSystemEquity(ctx context.Context, currency ledger.Currency) (account.Account, error) {
-	// Try to find existing system equity account by convention
+	return s.getOrCreateSystemAccount(ctx, fmt.Sprintf("System Equity (%s)", currency), "EQUITY", currency)
+}
+
+// suspenseAccountID returns the system suspense account for a currency.
+// Suspense accounts hold money in-flight during saga transfers.
+func (s *LedgerService) suspenseAccountID(ctx context.Context, currency ledger.Currency) ledger.AccountID {
+	acc, err := s.getOrCreateSystemAccount(ctx, fmt.Sprintf("System Suspense (%s)", currency), "LIABILITY", currency)
+	if err != nil {
+		return ledger.AccountID{} // will fail at transaction validation
+	}
+	return acc.ID()
+}
+
+func (s *LedgerService) getOrCreateSystemAccount(ctx context.Context, name, accType string, currency ledger.Currency) (account.Account, error) {
 	all, err := s.accounts.FindAll(ctx)
 	if err != nil {
 		return account.Account{}, err
 	}
 
-	equityName := fmt.Sprintf("System Equity (%s)", currency)
 	for _, acc := range all {
-		if acc.Name() == equityName && acc.Type() == account.Equity {
+		if acc.Name() == name {
 			return acc, nil
 		}
 	}
 
-	// Create one if it doesn't exist
 	return s.OpenAccount(ctx, OpenAccountCmd{
-		Name:        equityName,
-		AccountType: "EQUITY",
+		Name:        name,
+		AccountType: accType,
 		Currency:    currency,
 	})
 }

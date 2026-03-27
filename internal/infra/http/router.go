@@ -37,6 +37,7 @@ func NewRouter(h *Handler, staticFS fs.FS, idempotencyStore *redisstore.Idempote
 		r.Get("/accounts/{accountID}/transactions", h.GetTransactionHistory)
 		r.Post("/transactions", h.RecordTransaction)
 		r.Post("/deposit", h.Deposit)
+		r.Post("/transfers", h.Transfer)
 	})
 
 	if staticFS != nil {
