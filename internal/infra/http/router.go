@@ -4,16 +4,25 @@ import (
 	"io/fs"
 	"net/http"
 
+	"github.com/fatihiazmi/ledger-engine/internal/infra/observability"
 	redisstore "github.com/fatihiazmi/ledger-engine/internal/infra/redis"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-func NewRouter(h *Handler, staticFS fs.FS, idempotencyStore *redisstore.IdempotencyStore) *chi.Mux {
+type RouterDeps struct {
+	Handler          *Handler
+	StaticFS         fs.FS
+	IdempotencyStore *redisstore.IdempotencyStore
+	Metrics          *observability.Metrics
+	HealthChecker    *observability.HealthChecker
+}
+
+func NewRouter(deps RouterDeps) *chi.Mux {
 	r := chi.NewRouter()
 
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(cors.Handler(cors.Options{
@@ -25,23 +34,35 @@ func NewRouter(h *Handler, staticFS fs.FS, idempotencyStore *redisstore.Idempote
 		MaxAge:           300,
 	}))
 
-	// Idempotency middleware for write endpoints
-	if idempotencyStore != nil {
-		r.Use(IdempotencyMiddleware(idempotencyStore))
+	// Observability middleware
+	if deps.Metrics != nil {
+		r.Use(MetricsMiddleware(deps.Metrics))
+	}
+	r.Use(middleware.Logger)
+
+	// Idempotency middleware
+	if deps.IdempotencyStore != nil {
+		r.Use(IdempotencyMiddleware(deps.IdempotencyStore))
 	}
 
+	// Health & metrics endpoints
+	r.Get("/health", deps.HealthChecker.Handler())
+	r.Handle("/metrics", promhttp.Handler())
+
+	// API
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/accounts", h.ListAccounts)
-		r.Post("/accounts", h.OpenAccount)
-		r.Get("/accounts/{accountID}", h.GetBalance)
-		r.Get("/accounts/{accountID}/transactions", h.GetTransactionHistory)
-		r.Post("/transactions", h.RecordTransaction)
-		r.Post("/deposit", h.Deposit)
-		r.Post("/transfers", h.Transfer)
+		r.Get("/accounts", deps.Handler.ListAccounts)
+		r.Post("/accounts", deps.Handler.OpenAccount)
+		r.Get("/accounts/{accountID}", deps.Handler.GetBalance)
+		r.Get("/accounts/{accountID}/transactions", deps.Handler.GetTransactionHistory)
+		r.Post("/transactions", deps.Handler.RecordTransaction)
+		r.Post("/deposit", deps.Handler.Deposit)
+		r.Post("/transfers", deps.Handler.Transfer)
 	})
 
-	if staticFS != nil {
-		fileServer := http.FileServerFS(staticFS)
+	// Frontend
+	if deps.StaticFS != nil {
+		fileServer := http.FileServerFS(deps.StaticFS)
 		r.Handle("/*", fileServer)
 	}
 

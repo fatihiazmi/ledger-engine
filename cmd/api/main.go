@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,6 +13,7 @@ import (
 	"github.com/fatihiazmi/ledger-engine/internal/app"
 	httpapi "github.com/fatihiazmi/ledger-engine/internal/infra/http"
 	"github.com/fatihiazmi/ledger-engine/internal/infra/inmemory"
+	"github.com/fatihiazmi/ledger-engine/internal/infra/observability"
 	pgstore "github.com/fatihiazmi/ledger-engine/internal/infra/postgres"
 	"github.com/fatihiazmi/ledger-engine/internal/infra/publisher"
 	redisstore "github.com/fatihiazmi/ledger-engine/internal/infra/redis"
@@ -25,6 +26,9 @@ import (
 func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Structured logging
+	logger := observability.SetupLogger()
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -44,22 +48,33 @@ func main() {
 	// Postgres
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		log.Fatalf("connect to database: %v", err)
+		logger.Error("connect to database", slog.Any("error", err))
+		os.Exit(1)
 	}
 	defer pool.Close()
 
 	if err := pool.Ping(ctx); err != nil {
-		log.Fatalf("ping database: %v", err)
+		logger.Error("ping database", slog.Any("error", err))
+		os.Exit(1)
 	}
-	log.Println("Connected to Postgres")
+	logger.Info("connected to Postgres")
 
 	// Redis
 	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Fatalf("connect to redis: %v", err)
+		logger.Error("connect to redis", slog.Any("error", err))
+		os.Exit(1)
 	}
 	defer rdb.Close()
-	log.Println("Connected to Redis")
+	logger.Info("connected to Redis")
+
+	// Metrics
+	metrics, _, err := observability.SetupMetrics()
+	if err != nil {
+		logger.Error("setup metrics", slog.Any("error", err))
+		os.Exit(1)
+	}
+	logger.Info("metrics initialized (Prometheus)")
 
 	// Wire CQRS + Outbox
 	eventStore := pgstore.NewEventStore(pool)
@@ -67,6 +82,7 @@ func main() {
 	projector := projection.NewPostgresProjector(pool)
 	queryService := projection.NewPostgresQueryService(pool)
 	idempotencyStore := redisstore.NewIdempotencyStore(rdb)
+	healthChecker := observability.NewHealthChecker(pool, rdb)
 
 	svc := app.NewLedgerService(
 		pgstore.NewAccountRepository(pool),
@@ -76,7 +92,7 @@ func main() {
 		projector,
 	)
 
-	// Start outbox worker (background)
+	// Outbox worker
 	logPublisher := publisher.NewLogPublisher()
 	outboxWorker := app.NewOutboxWorker(outboxWriter, logPublisher)
 	go outboxWorker.Start(ctx)
@@ -86,26 +102,35 @@ func main() {
 
 	staticFS, err := fs.Sub(web.StaticFS, "static")
 	if err != nil {
-		log.Fatalf("static files: %v", err)
+		logger.Error("static files", slog.Any("error", err))
+		os.Exit(1)
 	}
 
-	router := httpapi.NewRouter(handler, staticFS, idempotencyStore)
+	router := httpapi.NewRouter(httpapi.RouterDeps{
+		Handler:          handler,
+		StaticFS:         staticFS,
+		IdempotencyStore: idempotencyStore,
+		Metrics:          metrics,
+		HealthChecker:    healthChecker,
+	})
 
 	fmt.Printf("\n  Ledger Engine running at http://localhost:%s\n\n", port)
-	fmt.Println("  API:          /api/v1/accounts, /api/v1/transactions, /api/v1/transfers")
 	fmt.Println("  Dashboard:    /")
-	fmt.Println("  Outbox:       Worker polling every 1s, publishing to log")
+	fmt.Println("  API:          /api/v1/*")
+	fmt.Println("  Health:       /health")
+	fmt.Println("  Metrics:      /metrics")
 	fmt.Println()
 
 	server := &http.Server{Addr: ":" + port, Handler: router}
 
 	go func() {
 		<-ctx.Done()
-		log.Println("Shutting down...")
+		logger.Info("shutting down")
 		server.Shutdown(context.Background())
 	}()
 
 	if err := server.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+		logger.Error("server error", slog.Any("error", err))
+		os.Exit(1)
 	}
 }
