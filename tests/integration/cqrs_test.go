@@ -60,6 +60,7 @@ func setupCQRS(t *testing.T) (*pgxpool.Pool, *app.LedgerService, *projection.Pos
 		inmemory.NewAccountRepository(),
 		inmemory.NewTransactionRepository(),
 		eventStore,
+		nil, // no outbox in CQRS test
 		projector,
 	)
 

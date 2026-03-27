@@ -17,6 +17,7 @@ func newTestService() *app.LedgerService {
 		inmemory.NewAccountRepository(),
 		inmemory.NewTransactionRepository(),
 		nil, // no event store for unit tests
+		nil, // no outbox for unit tests
 		nil, // no projector for unit tests
 	)
 }

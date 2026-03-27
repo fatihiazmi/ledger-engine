@@ -7,11 +7,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/fatihiazmi/ledger-engine/internal/app"
 	httpapi "github.com/fatihiazmi/ledger-engine/internal/infra/http"
 	"github.com/fatihiazmi/ledger-engine/internal/infra/inmemory"
 	pgstore "github.com/fatihiazmi/ledger-engine/internal/infra/postgres"
+	"github.com/fatihiazmi/ledger-engine/internal/infra/publisher"
 	redisstore "github.com/fatihiazmi/ledger-engine/internal/infra/redis"
 	"github.com/fatihiazmi/ledger-engine/internal/projection"
 	"github.com/fatihiazmi/ledger-engine/web"
@@ -20,7 +23,8 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -57,8 +61,9 @@ func main() {
 	defer rdb.Close()
 	log.Println("Connected to Redis")
 
-	// Wire CQRS
+	// Wire CQRS + Outbox
 	eventStore := pgstore.NewEventStore(pool)
+	outboxWriter := pgstore.NewOutboxWriter(pool)
 	projector := projection.NewPostgresProjector(pool)
 	queryService := projection.NewPostgresQueryService(pool)
 	idempotencyStore := redisstore.NewIdempotencyStore(rdb)
@@ -67,8 +72,14 @@ func main() {
 		pgstore.NewAccountRepository(pool),
 		inmemory.NewTransactionRepository(),
 		eventStore,
+		outboxWriter,
 		projector,
 	)
+
+	// Start outbox worker (background)
+	logPublisher := publisher.NewLogPublisher()
+	outboxWorker := app.NewOutboxWorker(outboxWriter, logPublisher)
+	go outboxWorker.Start(ctx)
 
 	transferSvc := app.NewTransferService(svc)
 	handler := httpapi.NewHandler(svc, transferSvc, queryService)
@@ -81,12 +92,20 @@ func main() {
 	router := httpapi.NewRouter(handler, staticFS, idempotencyStore)
 
 	fmt.Printf("\n  Ledger Engine running at http://localhost:%s\n\n", port)
-	fmt.Println("  API:          /api/v1/accounts, /api/v1/transactions")
+	fmt.Println("  API:          /api/v1/accounts, /api/v1/transactions, /api/v1/transfers")
 	fmt.Println("  Dashboard:    /")
-	fmt.Println("  Idempotency:  Send Idempotency-Key header on POST requests")
+	fmt.Println("  Outbox:       Worker polling every 1s, publishing to log")
 	fmt.Println()
 
-	if err := http.ListenAndServe(":"+port, router); err != nil {
+	server := &http.Server{Addr: ":" + port, Handler: router}
+
+	go func() {
+		<-ctx.Done()
+		log.Println("Shutting down...")
+		server.Shutdown(context.Background())
+	}()
+
+	if err := server.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
 }

@@ -10,12 +10,18 @@ import (
 	"github.com/fatihiazmi/ledger-engine/internal/domain/ledger"
 )
 
+// OutboxAppender writes events to both event store and outbox atomically.
+type OutboxAppender interface {
+	AppendWithOutbox(ctx context.Context, aggregateID, aggregateType string, expectedVersion int64, events []ledger.StoredEvent) error
+}
+
 // LedgerService is the CQRS write side (command handler).
 // Validates commands, updates domain state, emits events to the event store.
 type LedgerService struct {
 	accounts     account.Repository
 	transactions ledger.TransactionRepository
 	eventStore   ledger.EventStore
+	outbox       OutboxAppender
 	projector    Projector
 }
 
@@ -29,12 +35,14 @@ func NewLedgerService(
 	accounts account.Repository,
 	transactions ledger.TransactionRepository,
 	eventStore ledger.EventStore,
+	outbox OutboxAppender,
 	projector Projector,
 ) *LedgerService {
 	return &LedgerService{
 		accounts:     accounts,
 		transactions: transactions,
 		eventStore:   eventStore,
+		outbox:       outbox,
 		projector:    projector,
 	}
 }
@@ -225,10 +233,6 @@ func (s *LedgerService) RecordTransaction(ctx context.Context, cmd RecordTransac
 }
 
 func (s *LedgerService) appendEvent(ctx context.Context, aggregateID, aggregateType string, expectedVersion int64, event ledger.DomainEvent) error {
-	if s.eventStore == nil {
-		return nil // event store is optional (Phase 1 tests don't use it)
-	}
-
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
@@ -240,5 +244,15 @@ func (s *LedgerService) appendEvent(ctx context.Context, aggregateID, aggregateT
 		OccurredAt: event.OccurredAt(),
 	}
 
-	return s.eventStore.Append(ctx, aggregateID, aggregateType, expectedVersion, []ledger.StoredEvent{stored})
+	// Prefer outbox (atomic write to event store + outbox in one transaction)
+	if s.outbox != nil {
+		return s.outbox.AppendWithOutbox(ctx, aggregateID, aggregateType, expectedVersion, []ledger.StoredEvent{stored})
+	}
+
+	// Fallback to direct event store (unit tests, no outbox)
+	if s.eventStore != nil {
+		return s.eventStore.Append(ctx, aggregateID, aggregateType, expectedVersion, []ledger.StoredEvent{stored})
+	}
+
+	return nil
 }

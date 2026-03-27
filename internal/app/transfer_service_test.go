@@ -17,7 +17,7 @@ func newTestTransferService() (*app.TransferService, *app.LedgerService) {
 	ledgerSvc := app.NewLedgerService(
 		inmemory.NewAccountRepository(),
 		inmemory.NewTransactionRepository(),
-		nil, nil,
+		nil, nil, nil,
 	)
 	transferSvc := app.NewTransferService(ledgerSvc)
 	return transferSvc, ledgerSvc
