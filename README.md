@@ -105,10 +105,10 @@ make test-cover    # Coverage report
 - [x] Phase 2: Event Sourcing (Postgres event store, snapshots)
 - [x] Phase 3: CQRS (Command/Query separation, read projections)
 - [x] Phase 4: REST API + Frontend Dashboard
-- [ ] Phase 5: Idempotency Keys
-- [ ] Phase 6: Saga Pattern (Transfers with compensation)
-- [ ] Phase 7: Outbox Pattern (Reliable event publishing)
-- [ ] Phase 8: Observability (OpenTelemetry, SLOs)
+- [x] Phase 5: Idempotency Keys
+- [x] Phase 6: Saga Pattern (Transfers with compensation)
+- [x] Phase 7: Outbox Pattern (Reliable event publishing)
+- [x] Phase 8: Observability (OpenTelemetry, SLOs)
 
 ## License
 
